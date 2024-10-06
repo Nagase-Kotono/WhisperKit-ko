@@ -340,13 +340,13 @@ struct WhisperAXWatchView: View {
 
         whisperKit = nil
         Task {
-            let config = WhisperKitConfig(verbose: true,
-                                          logLevel: .debug,
-                                          prewarm: false,
-                                          load: false,
-                                          download: false)
-
-            whisperKit = try await WhisperKit(config)
+            whisperKit = try await WhisperKit(
+                verbose: true,
+                logLevel: .debug,
+                prewarm: false,
+                load: false,
+                download: false
+            )
             guard let whisperKit = whisperKit else {
                 return
             }

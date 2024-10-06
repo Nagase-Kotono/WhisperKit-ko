@@ -1,6 +1,3 @@
-//  For licensing see accompanying LICENSE.md file.
-//  Copyright © 2024 Argmax, Inc. All rights reserved.
-
 import SwiftUI
 import WhisperKit
 #if canImport(UIKit)
@@ -1747,3 +1744,4 @@ struct ContentView: View {
         .frame(width: 800, height: 500)
     #endif
 }
+
