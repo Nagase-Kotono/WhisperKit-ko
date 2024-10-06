@@ -238,7 +238,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1520;
-				LastUpgradeCheck = 1520;
+				LastUpgradeCheck = 1600;
 				TargetAttributes = {
 					167B345D2B05431E0076F261 = {
 						CreatedOnToolsVersion = 15.0.1;
@@ -260,6 +260,7 @@
 			knownRegions = (
 				en,
 				Base,
+				ko,
 			);
 			mainGroup = 167B34552B05431E0076F261;
 			packageReferences = (
