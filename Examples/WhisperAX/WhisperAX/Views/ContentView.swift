@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import WhisperKit
 #if canImport(UIKit)
 import UIKit
@@ -8,7 +9,35 @@ import AppKit
 import AVFoundation
 import CoreML
 
+class ContentViewModel: ObservableObject {
+    @Published var confirmedSegments: [TranscriptionSegment] = []
+    @Published var unconfirmedSegments: [TranscriptionSegment] = []
+    @Published var bufferEnergy: [Float] = []      // 추가된 부분
+    @Published var bufferSeconds: Double = 0       // 추가된 부분
+
+    private var cancellables = Set<AnyCancellable>()
+    
+    init() {
+        // Debounce 설정: 0.3초 간격으로 업데이트
+        $confirmedSegments
+            .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.notifyScroll()
+            }
+            .store(in: &cancellables)
+    }
+    
+    var onScroll: (() -> Void)?
+    
+    private func notifyScroll() {
+        onScroll?()
+    }
+}
+
 struct ContentView: View {
+    
+    @StateObject private var viewModel = ContentViewModel()
+    
     // MARK: - 상태 변수 선언
 
     @State private var whisperKit: WhisperKit? = nil  // WhisperKit 인스턴스
@@ -73,10 +102,6 @@ struct ContentView: View {
     @State private var lastBufferSize: Int = 0  // 마지막 버퍼 크기
     @State private var lastConfirmedSegmentEndSeconds: Float = 0  // 마지막으로 확인된 세그먼트 종료 시간
     @State private var requiredSegmentsForConfirmation: Int = 4  // 확인에 필요한 세그먼트 수
-    @State private var bufferEnergy: [Float] = []  // 버퍼 에너지 값 (VAD에 사용)
-    @State private var bufferSeconds: Double = 0  // 버퍼의 총 시간 (초)
-    @State private var confirmedSegments: [TranscriptionSegment] = []  // 확인된 전사 세그먼트
-    @State private var unconfirmedSegments: [TranscriptionSegment] = []  // 아직 확인되지 않은 전사 세그먼트
 
     // MARK: - Eager 모드 변수
 
@@ -163,13 +188,8 @@ struct ContentView: View {
                 #if os(iOS)
                 modelSelectorView  // 모델 선택 뷰 (iOS에서는 상세 뷰에 표시)
                     .padding()
-                transcriptionView  // 전사 결과 뷰
-                #elseif os(macOS)
-                VStack(alignment: .leading) {
-                    transcriptionView  // 전사 결과 뷰
-                }
-                .padding()
                 #endif
+                transcriptionView
                 controlsView  // 컨트롤 뷰 (녹음, 설정 등)
             }
             .toolbar(content: {
@@ -177,7 +197,7 @@ struct ContentView: View {
                     // 텍스트 복사 버튼
                     Button {
                         if (!enableEagerDecoding) {
-                            let fullTranscript = formatSegments(confirmedSegments + unconfirmedSegments, withTimestamps: enableTimestamps).joined(separator: "\n")
+                            let fullTranscript = formatSegments(viewModel.confirmedSegments + viewModel.unconfirmedSegments, withTimestamps: enableTimestamps).joined(separator: "\n")
                             #if os(iOS)
                             UIPasteboard.general.string = fullTranscript
                             #elseif os(macOS)
@@ -207,112 +227,120 @@ struct ContentView: View {
             #endif
             fetchModels()  // 모델 목록 가져오기
         }
+        .environmentObject(viewModel)
+    }
+    
+    var formattedSegmentsText: String {
+        viewModel.confirmedSegments.map { segment in
+            let timestampText = enableTimestamps ? "[\(String(format: "%.2f", segment.start)) --> \(String(format: "%.2f", segment.end))] " : ""
+            return timestampText + segment.text
+        }.joined(separator: "\n")
     }
 
-    // MARK: - 전사 결과 뷰
+    struct TranscriptionSegmentView: View {
+        let segment: TranscriptionSegment
+        let enableTimestamps: Bool
 
+        var body: some View {
+            let timestampText = enableTimestamps ? "[\(String(format: "%.2f", segment.start)) --> \(String(format: "%.2f", segment.end))] " : ""
+            Text(timestampText + segment.text)
+                .font(.headline)
+                .fontWeight(.bold)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    
     var transcriptionView: some View {
-        VStack {
-            // 버퍼 에너지 뷰 (VAD 시각화)
-            if !bufferEnergy.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 1) {
-                        let startIndex = max(bufferEnergy.count - 300, 0)
-                        ForEach(Array(bufferEnergy.enumerated())[startIndex...], id: \.element) { _, energy in
-                            ZStack {
+        ScrollViewReader { scrollProxy in
+            VStack {
+                // VAD 에너지 시각화
+                if !viewModel.bufferEnergy.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 1) {
+                            let startIndex = max(viewModel.bufferEnergy.count - 300, 0)
+                            ForEach(Array(viewModel.bufferEnergy.enumerated())[startIndex...], id: \.offset) { _, energy in
                                 RoundedRectangle(cornerRadius: 2)
                                     .frame(width: 2, height: CGFloat(energy) * 24)
+                                    .foregroundColor(energy > Float(silenceThreshold) ? Color.green.opacity(0.2) : Color.red.opacity(0.2))
                             }
-                            .frame(maxHeight: 24)
-                            .background(energy > Float(silenceThreshold) ? Color.green.opacity(0.2) : Color.red.opacity(0.2))
                         }
+                    }
+                    .frame(height: 24)
+                    .scrollIndicators(.never)
+                }
+
+                if enableEagerDecoding && isStreamMode {
+                    TextEditor(text: .constant(formattedSegmentsText))
+                        .disabled(true)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding()
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(viewModel.confirmedSegments) { segment in
+                                TranscriptionSegmentView(segment: segment, enableTimestamps: enableTimestamps)
+                                    .id(segment.id) // 고유 ID 부여
+                            }
+                            ForEach(viewModel.unconfirmedSegments) { segment in
+                                TranscriptionSegmentView(segment: segment, enableTimestamps: enableTimestamps)
+                                    .foregroundColor(.gray)
+                                    .id(segment.id) // 고유 ID 부여
+                            }
+                            if enableDecoderPreview {
+                                Text(currentText)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .multilineTextAlignment(.leading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                        .padding()
+                        .onChange(of: viewModel.confirmedSegments.count) { _ in
+                            // confirmedSegments가 업데이트될 때마다 마지막 요소로 스크롤
+                            if let lastSegment = viewModel.confirmedSegments.last {
+                                withAnimation(.easeOut(duration: 0.3)) {
+                                    scrollProxy.scrollTo(lastSegment.id, anchor: .bottom)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .textSelection(.enabled)
+                }
+
+                // 전사 진행 상황 표시
+                if let whisperKit,
+                   !isStreamMode,
+                   isTranscribing,
+                   let task = transcribeTask,
+                   !task.isCancelled,
+                   whisperKit.progress.fractionCompleted < 1
+                {
+                    HStack {
+                        ProgressView(whisperKit.progress)
+                            .progressViewStyle(.linear)
+                            .labelsHidden()
+                            .padding(.horizontal)
+
+                        Button {
+                            transcribeTask?.cancel()
+                            transcribeTask = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(BorderlessButtonStyle())
                     }
                 }
-                .defaultScrollAnchor(.trailing)
-                .frame(height: 24)
-                .scrollIndicators(.never)
             }
-
-            // 전사된 텍스트 뷰
-            ScrollView {
-                VStack(alignment: .leading) {
-                    if enableEagerDecoding && isStreamMode {
-                        // Eager 모드의 스트림 전사 결과
-                        let startSeconds = eagerResults.first??.segments.first?.start ?? 0
-                        let endSeconds = lastAgreedSeconds > 0 ? lastAgreedSeconds : eagerResults.last??.segments.last?.end ?? 0
-                        let timestampText = (enableTimestamps && eagerResults.first != nil) ? "[\(String(format: "%.2f", startSeconds)) --> \(String(format: "%.2f", endSeconds))]" : ""
-                        Text("\(timestampText) \(Text(confirmedText).fontWeight(.bold))\(Text(hypothesisText).fontWeight(.bold).foregroundColor(.gray))")
-                            .font(.headline)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if enableDecoderPreview {
-                            // 디코더 미리보기
-                            Text("\(currentText)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top)
-                        }
-                    } else {
-                        // 일반 모드의 전사 결과
-                        ForEach(Array(confirmedSegments.enumerated()), id: \.element) { _, segment in
-                            let timestampText = enableTimestamps ? "[\(String(format: "%.2f", segment.start)) --> \(String(format: "%.2f", segment.end))]" : ""
-                            Text(timestampText + segment.text)
-                                .font(.headline)
-                                .fontWeight(.bold)
-                                .tint(.green)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        ForEach(Array(unconfirmedSegments.enumerated()), id: \.element) { _, segment in
-                            let timestampText = enableTimestamps ? "[\(String(format: "%.2f", segment.start)) --> \(String(format: "%.2f", segment.end))]" : ""
-                            Text(timestampText + segment.text)
-                                .font(.headline)
-                                .fontWeight(.bold)
-                                .foregroundColor(.gray)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        if enableDecoderPreview {
-                            // 디코더 미리보기
-                            Text("\(currentText)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+            .onReceive(viewModel.$confirmedSegments) { _ in
+                // confirmedSegments가 업데이트될 때마다 마지막 요소로 스크롤
+                if let lastSegment = viewModel.confirmedSegments.last {
+                    withAnimation(.easeOut(duration: 0.3)) {
+                        scrollProxy.scrollTo(lastSegment.id, anchor: .bottom)
                     }
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .defaultScrollAnchor(.bottom)
-            .textSelection(.enabled)
-            .padding()
-
-            // 전사 진행 상황 표시
-            if let whisperKit,
-               !isStreamMode,
-               isTranscribing,
-               let task = transcribeTask,
-               !task.isCancelled,
-               whisperKit.progress.fractionCompleted < 1
-            {
-                HStack {
-                    ProgressView(whisperKit.progress)
-                        .progressViewStyle(.linear)
-                        .labelsHidden()
-                        .padding(.horizontal)
-
-                    Button {
-                        transcribeTask?.cancel()
-                        transcribeTask = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                    .buttonStyle(BorderlessButtonStyle())
                 }
             }
         }
@@ -578,7 +606,7 @@ struct ContentView: View {
 
                                     if isRecording {
                                         // 녹음 시간 표시
-                                        Text("\(String(format: "%.1f", bufferSeconds)) s")
+                                        Text("\(String(format: "%.1f", viewModel.bufferSeconds)) s")
                                             .font(.caption)
                                             .foregroundColor(.gray)
                                             .offset(x: 80, y: 0)
@@ -647,7 +675,7 @@ struct ContentView: View {
 
                                 if isRecording {
                                     // 녹음 시간 표시
-                                    Text("\(String(format: "%.1f", bufferSeconds)) s")
+                                    Text("\(String(format: "%.1f", viewModel.bufferSeconds)) s")
                                         .font(.caption)
                                         .foregroundColor(.gray)
                                         .offset(x: 80, y: 0)
@@ -966,6 +994,13 @@ struct ContentView: View {
     }
 
     // MARK: - 도우미 함수들
+    
+    func formatSegments(_ segments: [TranscriptionSegment], withTimestamps: Bool) -> [String] {
+        return segments.map { segment in
+            let timestampText = withTimestamps ? "[\(String(format: "%.2f", segment.start)) --> \(String(format: "%.2f", segment.end))] " : ""
+            return timestampText + segment.text
+        }
+    }
 
     func fetchModels() {
         availableModels = [selectedModel]
@@ -1254,10 +1289,10 @@ struct ContentView: View {
                 }
                 #endif
 
-                try? audioProcessor.startRecordingLive(inputDeviceID: deviceId) { _ in
+                try? audioProcessor.startRecordingLive(inputDeviceID: deviceId) { [weak viewModel] _ in
                     DispatchQueue.main.async {
-                        bufferEnergy = whisperKit?.audioProcessor.relativeEnergy ?? []
-                        bufferSeconds = Double(whisperKit?.audioProcessor.audioSamples.count ?? 0) / Double(WhisperKit.sampleRate)
+                        viewModel?.bufferEnergy = whisperKit?.audioProcessor.relativeEnergy ?? []
+                        viewModel?.bufferSeconds = Double(whisperKit?.audioProcessor.audioSamples.count ?? 0) / Double(WhisperKit.sampleRate)
                     }
                 }
 
@@ -1270,6 +1305,7 @@ struct ContentView: View {
             }
         }
     }
+
 
     func stopRecording(_ loop: Bool) {
         isRecording = false
@@ -1304,9 +1340,9 @@ struct ContentView: View {
                     hypothesisText = ""
                 }
 
-                if unconfirmedSegments.count > 0 {
-                    confirmedSegments.append(contentsOf: unconfirmedSegments)
-                    unconfirmedSegments = []
+                if viewModel.unconfirmedSegments.count > 0 {
+                    viewModel.confirmedSegments.append(contentsOf: viewModel.unconfirmedSegments)
+                    viewModel.unconfirmedSegments = []
                 }
             }
         }
@@ -1339,7 +1375,8 @@ struct ContentView: View {
             self.pipelineStart = transcription?.timings.pipelineStart ?? 0
             self.currentLag = transcription?.timings.decodingLoop ?? 0
 
-            self.confirmedSegments = segments
+            // 수정된 부분: viewModel.confirmedSegments로 업데이트
+            self.viewModel.confirmedSegments = segments
         }
     }
 
@@ -1560,17 +1597,17 @@ struct ContentView: View {
 
                         // Add confirmed segments to the confirmedSegments array
                         for segment in confirmedSegmentsArray {
-                            if !self.confirmedSegments.contains(segment: segment) {
-                                self.confirmedSegments.append(segment)
+                            if !self.viewModel.confirmedSegments.contains(segment) {
+                                self.viewModel.confirmedSegments.append(segment)
                             }
                         }
                     }
 
                     // Update transcriptions to reflect the remaining segments
-                    self.unconfirmedSegments = remainingSegments
+                    self.viewModel.unconfirmedSegments = remainingSegments
                 } else {
                     // Handle the case where segments are fewer or equal to required
-                    self.unconfirmedSegments = segments
+                    self.viewModel.unconfirmedSegments = segments
                 }
             }
         }
@@ -1721,10 +1758,12 @@ struct ContentView: View {
         lastBufferSize = 0
         lastConfirmedSegmentEndSeconds = 0
         requiredSegmentsForConfirmation = 2
-        bufferEnergy = []
-        bufferSeconds = 0
-        confirmedSegments = []
-        unconfirmedSegments = []
+        viewModel.bufferEnergy = []
+        viewModel.bufferSeconds = 0
+
+        // 수정된 부분: viewModel의 confirmedSegments와 unconfirmedSegments를 초기화
+        viewModel.confirmedSegments = []
+        viewModel.unconfirmedSegments = []
 
         eagerResults = []
         prevResult = nil
