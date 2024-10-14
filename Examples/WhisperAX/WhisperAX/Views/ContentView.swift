@@ -700,50 +700,67 @@ struct ContentView: View {
     var basicSettingsView: some View {
         VStack {
             HStack {
+                // Transcribe(전사) 또는 Translate(번역) 작업 선택 Picker
                 Picker("", selection: $selectedTask) {
+                    // DecodingTask에 정의된 모든 작업 옵션을 제공
                     ForEach(DecodingTask.allCases, id: \.self) { task in
                         Text(task.description.capitalized).tag(task.description)
                     }
                 }
+                // 세그먼트 스타일 Picker로 표시
                 .pickerStyle(SegmentedPickerStyle())
+                // 모델이 다국어를 지원하지 않는 경우 비활성화
                 .disabled(!(whisperKit?.modelVariant.isMultilingual ?? false))
             }
-            .padding(.horizontal)
+            .padding(.horizontal)  // 좌우 여백 추가
 
+            // 언어 선택 Picker
             LabeledContent {
                 Picker("", selection: $selectedLanguage) {
+                    // 사용 가능한 언어 목록을 나열하고 선택 가능하도록 함
                     ForEach(availableLanguages, id: \.self) { language in
                         Text(language.description).tag(language.description)
                     }
                 }
+                // 모델이 다국어를 지원하지 않으면 비활성화
                 .disabled(!(whisperKit?.modelVariant.isMultilingual ?? false))
             } label: {
+                // 언어 선택 Picker에 대한 레이블
                 Label("Source Language", systemImage: "globe")
             }
-            .padding(.horizontal)
-            .padding(.top)
+            .padding(.horizontal)  // 좌우 여백 추가
+            .padding(.top)  // 상단 여백 추가
 
+            // 성능 관련 메트릭을 표시하는 영역 (실시간 비율, 속도 계수 등)
             HStack {
-                Text(effectiveRealTimeFactor.formatted(.number.precision(.fractionLength(3))) + " RTF")
+                // 복잡한 계산식을 미리 처리하여 보기 쉽게 하기 위해 변수로 분리
+                let rtfText = "\(effectiveRealTimeFactor.formatted(.number.precision(.fractionLength(3)))) RTF"  // 실시간 비율(RTF)
+                let speedFactorText = "\(effectiveSpeedFactor.formatted(.number.precision(.fractionLength(1)))) Speed Factor"  // 속도 계수
+                let tokensPerSecondText = "\(tokensPerSecond.formatted(.number.precision(.fractionLength(0)))) tok/s"  // 초당 생성되는 토큰 수
+                let firstTokenTimeInterval = firstTokenTime - pipelineStart  // 첫 번째 토큰 생성까지의 시간
+                let firstTokenTimeText = "First token: \(firstTokenTimeInterval.formatted(.number.precision(.fractionLength(2))))s"  // 첫 번째 토큰 생성 시간
+
+                // 각 메트릭을 텍스트로 표시
+                Text(rtfText)
                     .font(.system(.body))
                     .lineLimit(1)
-                Spacer()
+                Spacer()  // 텍스트 사이에 간격 추가
                 #if os(macOS)
-                Text(effectiveSpeedFactor.formatted(.number.precision(.fractionLength(1))) + " Speed Factor")
+                Text(speedFactorText)  // 속도 계수 텍스트 (macOS 전용)
                     .font(.system(.body))
                     .lineLimit(1)
                 Spacer()
                 #endif
-                Text(tokensPerSecond.formatted(.number.precision(.fractionLength(0))) + " tok/s")
+                Text(tokensPerSecondText)  // 초당 토큰 수
                     .font(.system(.body))
                     .lineLimit(1)
                 Spacer()
-                Text("First token: " + (firstTokenTime - pipelineStart).formatted(.number.precision(.fractionLength(2))) + "s")
+                Text(firstTokenTimeText)  // 첫 번째 토큰 생성 시간
                     .font(.system(.body))
                     .lineLimit(1)
             }
-            .padding()
-            .frame(maxWidth: .infinity)
+            .padding()  // 패딩 추가
+            .frame(maxWidth: .infinity)  // 뷰의 최대 너비 설정
         }
     }
 
