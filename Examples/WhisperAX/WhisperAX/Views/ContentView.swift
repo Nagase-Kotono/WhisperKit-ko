@@ -999,6 +999,7 @@ struct ContentView: View {
     }
 
     func loadModel(_ model: String, redownload: Bool = false) {
+        print("==================================================== << loadModel >>")
         print("Selected Model: \(UserDefaults.standard.string(forKey: "selectedModel") ?? "nil")")
         print("""
             Computing Options:
@@ -1007,89 +1008,105 @@ struct ContentView: View {
             - Text Decoder:     \(getComputeOptions().textDecoderCompute.description)
             - Prefill Data:     \(getComputeOptions().prefillCompute.description)
         """)
+        print("====================================================\n\n")
 
-        whisperKit = nil
+        // 이전 작업 취소 및 상태 초기화
+        resetState()
+
         Task {
-            let config = WhisperKitConfig(computeOptions: getComputeOptions(),
-                                          verbose: true,
-                                          logLevel: .debug,
-                                          prewarm: false,
-                                          load: false,
-                                          download: false)
-            whisperKit = try await WhisperKit(config)
-            guard let whisperKit = whisperKit else {
-                return
+            // 이전 모델이 로드된 경우 언로드
+            if let existingWhisperKit = whisperKit {
+                await existingWhisperKit.unloadModels()
             }
 
-            var folder: URL?
+            // 이전 인스턴스 해제
+            whisperKit = nil
 
-            // Check if the model is available locally
-            if localModels.contains(model) && !redownload {
-                // Get local model folder URL from localModels
-                // TODO: Make this configurable in the UI
-                folder = URL(fileURLWithPath: localModelPath).appendingPathComponent(model)
-            } else {
-                // Download the model
-                folder = try await WhisperKit.download(variant: model, from: repoName, progressCallback: { progress in
-                    DispatchQueue.main.async {
-                        loadingProgressValue = Float(progress.fractionCompleted) * specializationProgressRatio
-                        modelState = .downloading
-                    }
-                })
-            }
+            // 새로운 WhisperKit 인스턴스 생성
+            do {
+                whisperKit = try await WhisperKit(
+                    computeOptions: getComputeOptions(),
+                    verbose: true,
+                    logLevel: .debug,
+                    prewarm: false,
+                    load: false,
+                    download: false
+                )
+                guard let whisperKit = whisperKit else {
+                    return
+                }
 
-            await MainActor.run {
-                loadingProgressValue = specializationProgressRatio
-                modelState = .downloaded
-            }
+                var folder: URL?
 
-            if let modelFolder = folder {
-                whisperKit.modelFolder = modelFolder
+                // 로컬 모델 확인
+                if localModels.contains(model), !redownload {
+                    folder = URL(fileURLWithPath: localModelPath).appendingPathComponent(model)
+                } else {
+                    // 모델 다운로드
+                    folder = try await WhisperKit.download(
+                        variant: model,
+                        from: repoName,
+                        progressCallback: { progress in
+                            DispatchQueue.main.async {
+                                loadingProgressValue = Float(progress.fractionCompleted) * specializationProgressRatio
+                                modelState = .downloading
+                            }
+                        }
+                    )
+                }
 
                 await MainActor.run {
-                    // Set the loading progress to 90% of the way after prewarm
                     loadingProgressValue = specializationProgressRatio
-                    modelState = .prewarming
+                    modelState = .downloaded
                 }
 
-                let progressBarTask = Task {
-                    await updateProgressBar(targetProgress: 0.9, maxTime: 240)
-                }
+                if let modelFolder = folder {
+                    whisperKit.modelFolder = modelFolder
 
-                // Prewarm models
-                do {
-                    try await whisperKit.prewarmModels()
-                    progressBarTask.cancel()
-                } catch {
-                    print("Error prewarming models, retrying: \(error.localizedDescription)")
-                    progressBarTask.cancel()
-                    if !redownload {
-                        loadModel(model, redownload: true)
-                        return
-                    } else {
-                        // Redownloading failed, error out
-                        modelState = .unloaded
-                        return
-                    }
-                }
-
-                await MainActor.run {
-                    // Set the loading progress to 90% of the way after prewarm
-                    loadingProgressValue = specializationProgressRatio + 0.9 * (1 - specializationProgressRatio)
-                    modelState = .loading
-                }
-
-                try await whisperKit.loadModels()
-
-                await MainActor.run {
-                    if !localModels.contains(model) {
-                        localModels.append(model)
+                    await MainActor.run {
+                        loadingProgressValue = specializationProgressRatio
+                        modelState = .prewarming
                     }
 
-                    availableLanguages = Constants.languages.map { $0.key }.sorted()
-                    loadingProgressValue = 1.0
-                    modelState = whisperKit.modelState
+                    let progressBarTask = Task {
+                        await updateProgressBar(targetProgress: 0.9, maxTime: 240)
+                    }
+
+                    // 모델 프리워밍
+                    do {
+                        try await whisperKit.prewarmModels()
+                        progressBarTask.cancel()
+                    } catch {
+                        print("Error prewarming models, retrying: \(error.localizedDescription)")
+                        progressBarTask.cancel()
+                        if !redownload {
+                            loadModel(model, redownload: true)
+                            return
+                        } else {
+                            modelState = .unloaded
+                            return
+                        }
+                    }
+
+                    await MainActor.run {
+                        loadingProgressValue = specializationProgressRatio + 0.9 * (1 - specializationProgressRatio)
+                        modelState = .loading
+                    }
+
+                    try await whisperKit.loadModels()
+
+                    await MainActor.run {
+                        if !localModels.contains(model) {
+                            localModels.append(model)
+                        }
+
+                        availableLanguages = Constants.languages.map { $0.key }.sorted()
+                        loadingProgressValue = 1.0
+                        modelState = whisperKit.modelState
+                    }
                 }
+            } catch {
+                print("Error initializing WhisperKit: \(error.localizedDescription)")
             }
         }
     }
